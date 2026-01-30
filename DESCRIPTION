@@ -1,0 +1,30 @@
+Package: shockcomercial
+Type: Package
+Title: Simulador de Shocks Comerciales
+Version: 0.1.0
+Author: Andreacr1214
+Description: Herramienta de analisis avanzado para evaluar el impacto de 
+    disrupciones en las cadenas de suministro y la vulnerabilidad comercial 
+    de España.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Imports:
+    shiny,
+    bslib,
+    tidyverse,
+    dplyr,
+    ggplot2,
+    plotly,
+    DT,
+    DBI,
+    lubridate,
+    scales,
+    shinyWidgets,
+    ggiraph,
+    cachem,
+    shinycssloaders,
+    patchwork,
+    writexl,
+    comerciotools
+RoxygenNote: 7.2.3
