@@ -399,31 +399,61 @@ vulnerabilidad_comercial_app <- function(...) {
         title = "Impacto con Sustitución",
         icon = shiny::icon("arrows-rotate"),
         sustitucion_proveedores_ui("sustitucion")
+      ),
+      bslib::nav_panel(
+        title = "Comparativa UE",
+        icon = shiny::icon("map-location-dot"),
+        comparativa_eurostat_ui("comparativa")
       )
     ),
 
-    bslib::nav_menu(
+    bslib::nav_panel(
       title = "Enfoque: País",
       icon = shiny::icon("globe"),
-      bslib::nav_panel(
-        title = "Próximamente",
-        shiny::div(class = "container-fluid mt-5",
-                   shiny::div(class = "text-center",
-                              shiny::h2("🚧 En Desarrollo"),
-                              shiny::p(class = "lead", "El análisis por país estará disponible próximamente.")
-                   )
-        )
-      )
+      enfoque_pais_ui("enfoque_pais")
+    ),
+
+    bslib::nav_spacer(),
+
+    bslib::nav_panel(
+      title = "Ayuda",
+      icon = shiny::icon("circle-question"),
+      ayuda_ui("ayuda")
     )
   )
   
   server <- function(input, output, session) {
 
-    conexion_db <- comerciotools::crear_conexion_pg()
+    # Check for DB connection requirements
+    required_vars <- c("POSTGRESQL_SGEYPC_USER", "POSTGRESQL_SGEYPC_PASSWORD", "SERVIDOR_SGEYPC")
+    missing_vars <- required_vars[sapply(required_vars, function(v) nchar(Sys.getenv(v)) == 0)]
+    
+    if(length(missing_vars) > 0) {
+      msg <- paste("Faltan variables de entorno para BD:", paste(missing_vars, collapse=", "))
+      showNotification(msg, type = "error", duration = NULL)
+      message("⚠ ", msg)
+    }
+
+    # Connect to database — required for real data
+    conexion_db <- tryCatch({
+      conn <- comerciotools::crear_conexion_pg()
+      message("✓ Conexión a BD establecida correctamente.")
+      conn
+    }, error = function(e) {
+      showNotification(
+        paste("Error de conexión a BD:", e$message), 
+        type = "error", 
+        duration = NULL
+      )
+      message("✗ Fallo conexión BD: ", e$message)
+      NULL
+    })
     
     shiny::onStop(function() {
-      message("Cerrando conexión a BD")
-      DBI::dbDisconnect(conexion_db)
+      if(!is.null(conexion_db)) {
+        message("Cerrando conexión a BD")
+        DBI::dbDisconnect(conexion_db)
+      }
     })
     
     contexto <- contexto_producto_server("contexto", conexion_db = conexion_db)
@@ -450,6 +480,18 @@ vulnerabilidad_comercial_app <- function(...) {
         shock_data = shock_configurado
       )
     }, error = function(e) message("Módulo sustitucion error: ", e$message))
+    
+    tryCatch({
+      comparativa_eurostat_server(
+        "comparativa",
+        contexto_data = contexto,
+        shock_data = shock_configurado
+      )
+    }, error = function(e) message("Módulo comparativa error: ", e$message))
+    
+    tryCatch({
+      enfoque_pais_server("enfoque_pais", conexion_db = conexion_db)
+    }, error = function(e) message("Módulo enfoque_pais error: ", e$message))
   }
   
   port <- as.numeric(Sys.getenv("SHINY_PORT", "3838"))
@@ -461,4 +503,4 @@ vulnerabilidad_comercial_app <- function(...) {
   )
 }
 
-# vulnerabilidad_comercial_app()
+#devulnerabilidad_comercial_app()

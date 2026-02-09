@@ -156,26 +156,14 @@ sustitucion_proveedores_ui <- function(id) {
                  card(
                    card_header(class = "bg-light", "📋 Tabla de Redistribución Detallada"),
                    card_body(
+                     downloadButton(ns("descargar_redistribucion"), "📥 Descargar Excel",
+                                    class = "btn-sm btn-outline-success mb-2"),
                      DTOutput(ns("tabla_redistribucion"))
                    )
                  )
           )
         ),
         
-        # NUEVO: Análisis de exportaciones de principales proveedores
-        fluidRow(
-          column(12,
-                 card(
-                   card_header(class = "bg-light", "🌐 Análisis de Diversificación de Exportaciones - Top 5 Proveedores"),
-                   card_body(
-                     div(class = "info-box", style = "margin-bottom: 20px;",
-                         "Este análisis muestra a qué países exportan los principales proveedores alternativos, 
-                         permitiendo evaluar su capacidad exportadora y el nivel de concentración de sus mercados de destino."),
-                     withSpinner(uiOutput(ns("analisis_exportaciones")))
-                   )
-                 )
-          )
-        )
     )
   )
 }
@@ -401,127 +389,7 @@ sustitucion_proveedores_server <- function(id, conexion_db, contexto_data, shock
       )
     })
     
-    # NUEVO: Análisis de exportaciones de los top 5 proveedores - CORREGIDO
-    analisis_exportaciones_data <- eventReactive(input$calcular_sustitucion, {
-      req(resultado_sustitucion(), contexto_data$producto())
-      
-      # Obtener top 5 proveedores post-sustitución
-      top5 <- resultado_sustitucion()$detalle %>%
-        arrange(desc(valor_final)) %>%
-        head(5) %>%
-        pull(iso3a)
-      
-      producto_codigo <- contexto_data$producto()
-      
-      message(sprintf("Consultando exportaciones de top 5: %s", paste(top5, collapse = ", ")))
-      
-      # Usar comtradr para obtener datos de exportaciones
-      tryCatch({
-        # Cargar token si está configurado
-        token <- Sys.getenv("COMTRADE_TOKEN", "")
-        
-        if(token != "") {
-          comtradr::set_primary_comtrade_key(token)
-        } else {
-          return(NULL)
-        }
-        
-        # Consultar datos para cada país del top 5
-        lista_resultados <- list()
-        
-        for(pais in top5) {
-          message(sprintf("  Descargando datos de %s...", pais))
-          
-          datos_pais <- comtradr::ct_get_data(
-            type = "goods",
-            frequency = "A",
-            commodity_classification = "HS",
-            commodity_code = producto_codigo,
-            flow_direction = "Export",
-            reporter = pais,
-            partner = "everything",
-            start_date = 2024,
-            end_date = 2024,
-            verbose = FALSE
-          )
-          
-          if(!is.null(datos_pais) && nrow(datos_pais) > 0) {
-            
-            # PASO 1: Extraer total exportado desde W00
-            total_exportado <- datos_pais %>%
-              filter(partner_iso == "W00") %>%
-              summarise(total = sum(primary_value, na.rm = TRUE)) %>%
-              pull(total)
-            
-            if(length(total_exportado) == 0 || total_exportado == 0) {
-              # Si no hay W00, sumar todos excepto W00
-              total_exportado <- datos_pais %>%
-                filter(partner_iso != "W00") %>%
-                summarise(total = sum(primary_value, na.rm = TRUE)) %>%
-                pull(total)
-            }
-            
-            # PASO 2: Procesar datos SIN W00 y obtener TODOS los destinos
-            todos_destinos <- datos_pais %>%
-              filter(partner_iso != "W00") %>%  # ✅ EXCLUIR W00
-              group_by(partner_iso) %>%
-              summarise(
-                valor_exportado = sum(primary_value, na.rm = TRUE),
-                .groups = "drop"
-              ) %>%
-              mutate(
-                reporter = pais,
-                cuota_exportacion = if(total_exportado > 0) {
-                  (valor_exportado / total_exportado) * 100
-                } else {
-                  NA
-                }
-              ) %>%
-              arrange(desc(valor_exportado))
-            
-            # PASO 3: Guardar metadatos
-            num_destinos_total <- nrow(todos_destinos)
-            pos_espana <- which(todos_destinos$partner_iso == "ESP")
-            valor_espana <- if(length(pos_espana) > 0) todos_destinos$valor_exportado[pos_espana] else NA
-            
-            # PASO 4: TOMAR SOLO TOP 5 PARA GRAFICAR
-            top5_destinos <- todos_destinos %>%
-              head(5)  # ✅ SOLO 5 DESTINOS
-            
-            # Agregar metadatos como atributos
-            attr(top5_destinos, "total_exportado") <- total_exportado
-            attr(top5_destinos, "num_destinos_total") <- num_destinos_total
-            attr(top5_destinos, "pos_espana") <- if(length(pos_espana) > 0) pos_espana else NA
-            attr(top5_destinos, "valor_espana") <- valor_espana
-            
-            lista_resultados[[pais]] <- top5_destinos
-            
-            message(sprintf("    ✓ Total: %.1fM$, %d destinos totales, top 5 guardado", 
-                            total_exportado/1e6, num_destinos_total))
-          }
-          
-          Sys.sleep(0.15) # Rate limiting
-        }
-        
-        # Combinar todos los resultados
-        if(length(lista_resultados) > 0) {
-          message(sprintf("✓ Datos de exportación descargados para %d países", length(lista_resultados)))
-          return(lista_resultados)
-        } else {
-          message("⚠ No se pudieron obtener datos de exportación")
-          return(NULL)
-        }
-        
-      }, error = function(e) {
-        message(sprintf("✗ Error descargando datos: %s", e$message))
-        showNotification(
-          paste("No se pudieron obtener datos de exportación de Comtrade:", e$message),
-          type = "warning",
-          duration = 10
-        )
-        return(NULL)
-      })
-    })
+
     
     # Outputs de métricas
     output$pct_absorbido <- renderText({
@@ -578,113 +446,23 @@ sustitucion_proveedores_server <- function(id, conexion_db, contexto_data, shock
         formatRound('Cambio %', 1)
     })
     
-    # NUEVO: Renderizado del análisis de exportaciones - USANDO TOP 5
-    output$analisis_exportaciones <- renderUI({
-      datos_lista <- analisis_exportaciones_data()
-      
-      if(is.null(datos_lista)) {
-        return(div(
-          class = "alert alert-warning",
-          icon("exclamation-triangle"),
-          " No se pudieron obtener datos de exportación desde Comtrade. ",
-          "Asegúrese de tener configurado un token válido con ",
-          tags$code("Sys.setenv(COMTRADE_TOKEN = 'su_token')")
-        ))
+    output$descargar_redistribucion <- downloadHandler(
+      filename = function() {
+        paste0("redistribucion_", Sys.Date(), ".xlsx")
+      },
+      content = function(file) {
+        req(resultado_sustitucion())
+        df <- resultado_sustitucion()$detalle %>%
+          arrange(desc(incremento)) %>%
+          select(País = iso3a,
+                 `Valor Original` = valor_12m,
+                 `Incremento` = incremento,
+                 `Valor Final` = valor_final,
+                 `Cambio %` = cambio_pct)
+        writexl::write_xlsx(df, file)
       }
-      
-      # Obtener top 5 actuales
-      top5 <- resultado_sustitucion()$detalle %>%
-        arrange(desc(valor_final)) %>%
-        head(5) %>%
-        pull(iso3a)
-      
-      # Crear visualizaciones para cada país
-      lapply(top5, function(pais) {
-        top5_data <- datos_lista[[pais]]
-        
-        if(is.null(top5_data) || nrow(top5_data) == 0) {
-          return(NULL)
-        }
-        
-        # Obtener metadatos
-        total_exportado <- attr(top5_data, "total_exportado")
-        num_destinos <- attr(top5_data, "num_destinos_total")
-        pos_espana <- attr(top5_data, "pos_espana")
-        valor_espana <- attr(top5_data, "valor_espana")
-        
-        # Calcular HHI con los datos del top 5
-        hhi_exportaciones <- sum(top5_data$cuota_exportacion^2, na.rm = TRUE)
-        
-        # Información de España
-        info_espana <- if(!is.na(pos_espana) && !is.na(valor_espana)) {
-          cuota_esp <- (valor_espana / total_exportado) * 100
-          paste0("#", pos_espana, " - ",
-                 scales::number(valor_espana, scale = 1e-6, suffix = "M$"),
-                 " (", round(cuota_esp, 1), "%)")
-        } else {
-          "No exporta este producto a España"
-        }
-        
-        div(
-          style = "margin-bottom: 30px; border-left: 4px solid #3b82f6; padding-left: 15px;",
-          
-          h4(style = "color: #1e3a8a; margin-bottom: 15px;",
-             icon("flag"), " ", pais),
-          
-          fluidRow(
-            column(3, div(
-              style = "background: #f8f9fa; padding: 10px; border-radius: 8px; text-align: center;",
-              p(style = "margin: 0; font-size: 0.8rem; color: #64748b;", "Total Exportado (2024)"),
-              p(style = "margin: 5px 0 0 0; font-size: 1.2rem; font-weight: 600; color: #1e3a8a;",
-                scales::number(total_exportado, scale = 1e-6, suffix = "M$", accuracy = 0.1))
-            )),
-            column(3, div(
-              style = "background: #f8f9fa; padding: 10px; border-radius: 8px; text-align: center;",
-              p(style = "margin: 0; font-size: 0.8rem; color: #64748b;", "Nº Destinos"),
-              p(style = "margin: 5px 0 0 0; font-size: 1.2rem; font-weight: 600; color: #1e3a8a;",
-                num_destinos)
-            )),
-            column(3, div(
-              style = "background: #f8f9fa; padding: 10px; border-radius: 8px; text-align: center;",
-              p(style = "margin: 0; font-size: 0.8rem; color: #64748b;", "HHI Exportaciones"),
-              p(style = "margin: 5px 0 0 0; font-size: 1.2rem; font-weight: 600; color: #1e3a8a;",
-                round(hhi_exportaciones, 0))
-            )),
-            column(3, div(
-              style = "background: #dbeafe; padding: 10px; border-radius: 8px; text-align: center;",
-              p(style = "margin: 0; font-size: 0.8rem; color: #1e40af;", "🇪🇸 España"),
-              p(style = "margin: 5px 0 0 0; font-size: 0.9rem; font-weight: 600; color: #1e40af;",
-                info_espana)
-            ))
-          ),
-          
-          div(style = "margin-top: 15px;",
-              renderPlotly({
-                # top5_data ya contiene solo 5 países sin W00
-                plot_ly(
-                  data = top5_data,
-                  x = ~valor_exportado / 1e6,
-                  y = ~reorder(partner_iso, valor_exportado),
-                  type = "bar",
-                  marker = list(
-                    color = ifelse(top5_data$partner_iso == "ESP", "#3b82f6", "#90CAF9")
-                  ),
-                  text = ~paste0(partner_iso, ": ", round(cuota_exportacion, 1), "%"),
-                  hovertemplate = "%{text}<br>$%{x:.1f}M<extra></extra>"
-                ) %>%
-                  layout(
-                    title = list(text = "Top 5 Destinos de Exportación (2024)", font = list(size = 12)),
-                    xaxis = list(title = "Millones $"),
-                    yaxis = list(title = ""),
-                    height = 280,
-                    margin = list(l = 50, r = 20, t = 40, b = 40)
-                  )
-              })
-          ),
-          
-          hr()
-        )
-      })
-    })
+    )
+    
+
   })
 }

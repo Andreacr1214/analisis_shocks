@@ -2,12 +2,8 @@
 # impacto.R - Módulo de Impacto Directo
 # ============================================================================
 
-library(shiny)
-library(bslib)
-library(tidyverse)
-library(DT)
-library(plotly)
-library(scales)
+# Note: library() calls removed — dependencies handled via DESCRIPTION/NAMESPACE
+# and the root app.R entry point
 
 # ============================================================================
 # UI del Módulo
@@ -107,10 +103,10 @@ impacto_directo_ui <- function(id) {
 # SERVER del Módulo
 # ============================================================================
 
-impacto_directo_server <- function(id, conexion_db) {
+impacto_directo_server <- function(id, conexion_db = NULL, contexto_data = NULL, shock_data = NULL) {
   moduleServer(id, function(input, output, session) {
     
-    # TODO: Implementar lógica del módulo
+    # TODO: Implementar lógica completa del módulo con contexto_data y shock_data
     
     output$shock_summary <- renderUI({
       div(

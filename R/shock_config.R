@@ -17,9 +17,31 @@ configuracion_shock_ui <- function(id) {
                  card(
                    card_header(class = "bg-light", "🎯 Parámetros del Shock"),
                    card_body(
-                     selectizeInput(ns("pais_shock"), "País afectado:", choices = NULL, width = "100%"),
+                     radioButtons(ns("tipo_shock"), "Tipo de shock:",
+                                  choices = c("Un país proveedor" = "pais", "Todos los proveedores" = "todos"),
+                                  selected = "pais", inline = TRUE),
+                     conditionalPanel(
+                       condition = sprintf("input['%s'] == 'pais'", ns("tipo_shock")),
+                       selectizeInput(ns("pais_shock"), "País afectado:", choices = c("Cargando..." = ""), width = "100%")
+                     ),
                      sliderInput(ns("magnitud_shock"), "Caída en importaciones:", 
                                  min = 0, max = 100, value = 40, step = 5, post = "%"),
+                     hr(),
+                     h6(tags$strong("🌐 Alcance geográfico del shock")),
+                     div(class = "text-muted small mb-2",
+                         "¿Este shock afecta igual a todos los países de la UE o solo a España?"),
+                     radioButtons(ns("alcance"), NULL,
+                                  choices = c(
+                                    "Igual para toda la UE" = "global",
+                                    "Específico España" = "espana",
+                                    "Personalizado (España vs resto UE)" = "custom"
+                                  ),
+                                  selected = "global"),
+                     conditionalPanel(
+                       condition = sprintf("input['%s'] == 'custom'", ns("alcance")),
+                       sliderInput(ns("mag_ue"), "Caída resto UE:",
+                                   min = 0, max = 100, value = 20, step = 5, post = "%")
+                     ),
                      hr(),
                      actionButton(ns("aplicar_shock"), "⚡ Aplicar y Calcular", class = "btn btn-primary btn-lg w-100")
                    )
@@ -84,48 +106,83 @@ configuracion_shock_server <- function(id, contexto_data) {
     observe({
       req(contexto_data$datos())
       datos <- contexto_data$datos()
-      paises_choices <- setNames(datos$iso3a, paste0(datos$iso3a, " - ", round(datos$cuota, 1), "%"))
-      updateSelectizeInput(session, "pais_shock", choices = c("Seleccione país..." = "", paises_choices))
+      
+      if(nrow(datos) > 0) {
+        paises_choices <- setNames(datos$iso3a, datos$iso3a)
+        updateSelectizeInput(session, "pais_shock", choices = c("Seleccione país..." = "", paises_choices), server = TRUE)
+      } else {
+        updateSelectizeInput(session, "pais_shock", choices = c("No hay datos" = ""))
+      }
     })
     
     # Lógica de cálculo al Aplicar
     observeEvent(input$aplicar_shock, {
-      req(input$pais_shock, contexto_data$datos(), contexto_data$total_general)
+      req(contexto_data$datos(), contexto_data$total_general)
       
       datos_orig <- contexto_data$datos()
-      p_data <- datos_orig %>% filter(iso3a == input$pais_shock)
       total_v <- sum(datos_orig$valor_12m, na.rm = TRUE)
-      
-      # Calcular HHI original
       hhi_original <- sum(datos_orig$cuota^2, na.rm = TRUE)
-      
-      # Calcular nuevas cuotas post-shock
-      valor_perdido <- p_data$valor_12m[1] * (input$magnitud_shock / 100)
-      nuevo_total <- total_v - valor_perdido
-      
-      # Obtener total general y calcular post-shock
       total_gral_original <- contexto_data$total_general()
-      total_gral_post_shock <- total_gral_original - valor_perdido
       
-      datos_post <- datos_orig %>%
-        mutate(
-          valor_post = ifelse(iso3a == input$pais_shock, valor_12m - valor_perdido, valor_12m),
-          cuota_post = (valor_post / nuevo_total) * 100
-        )
+      if(input$tipo_shock == "pais") {
+        # --- Shock a un solo país ---
+        req(input$pais_shock)
+        p_data <- datos_orig %>% filter(iso3a == input$pais_shock)
+        req(nrow(p_data) > 0)
+        
+        valor_perdido <- p_data$valor_12m[1] * (input$magnitud_shock / 100)
+        nuevo_total <- total_v - valor_perdido
+        total_gral_post_shock <- total_gral_original - valor_perdido
+        
+        datos_post <- datos_orig %>%
+          mutate(
+            valor_post = ifelse(iso3a == input$pais_shock, valor_12m - valor_perdido, valor_12m),
+            cuota_post = (valor_post / nuevo_total) * 100
+          )
+        
+        shock_label <- input$pais_shock
+        cuota_orig <- p_data$cuota[1]
+        
+      } else {
+        # --- Shock a todos los proveedores ---
+        mag <- input$magnitud_shock / 100
+        valor_perdido <- total_v * mag
+        nuevo_total <- total_v * (1 - mag)
+        total_gral_post_shock <- total_gral_original - valor_perdido
+        
+        datos_post <- datos_orig %>%
+          mutate(
+            valor_post = valor_12m * (1 - mag),
+            cuota_post = cuota  # cuotas no cambian (reducción proporcional)
+          )
+        
+        shock_label <- "TODOS"
+        cuota_orig <- 100
+      }
       
-      # Calcular nuevo HHI
       hhi_nuevo <- sum(datos_post$cuota_post^2, na.rm = TRUE)
+      nuevo_lider <- datos_post %>% arrange(desc(valor_post)) %>% slice(1)
       
-      # Identificar nuevo líder
-      nuevo_lider <- datos_post %>% 
-        arrange(desc(valor_post)) %>% 
-        slice(1)
+      # Calcular magnitudes diferenciadas según alcance
+      mag_espana <- input$magnitud_shock
+      alcance <- input$alcance
+      if(alcance == "global") {
+        mag_ue <- mag_espana
+      } else if(alcance == "espana") {
+        mag_ue <- 0
+      } else {  # custom
+        mag_ue <- input$mag_ue
+      }
       
       shock_configurado(list(
-        pais = input$pais_shock,
+        pais = shock_label,
         magnitud = input$magnitud_shock,
-        cuota_original = p_data$cuota[1],
-        valor_original = p_data$valor_12m[1],
+        tipo = input$tipo_shock,
+        alcance = alcance,
+        mag_espana = mag_espana,
+        mag_ue = mag_ue,
+        cuota_original = cuota_orig,
+        valor_original = if(input$tipo_shock == "pais") datos_orig %>% filter(iso3a == input$pais_shock) %>% pull(valor_12m) %>% `[`(1) else total_v,
         valor_perdido = valor_perdido,
         total_antes = total_v,
         total_despues = nuevo_total,

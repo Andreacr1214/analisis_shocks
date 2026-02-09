@@ -6,29 +6,34 @@ contexto_producto_ui <- function(id) {
         fluidRow(
           column(12,
                  h2(class = "section-title", "Contexto del Producto"),
-                 p(class = "lead", "Seleccione el producto TARIC para analizar su vulnerabilidad.")
+                 p(class = "lead", "Seleccione uno o varios productos TARIC (HS2, HS4 o HS6) para analizar su vulnerabilidad.")
           )
         ),
         
         fluidRow(
           column(12,
                  card(
-                   card_header(class = "bg-light", "🔍 Seleccionar Producto"),
+                   card_header(class = "bg-light", "🔍 Seleccionar Producto(s)"),
                    card_body(
                      fluidRow(
-                       column(12,
+                       column(9,
                               selectizeInput(
                                 ns("producto"),
-                                "Código TARIC:",
+                                "Códigos TARIC (cualquier nivel):",
                                 choices = NULL,
+                                multiple = TRUE,
                                 width = "100%",
                                 options = list(
-                                  placeholder = 'Escriba o seleccione un código...',
-                                  maxOptions = 1000000
+                                  placeholder = 'Escriba o seleccione códigos...',
+                                  maxOptions = 100
                                 )
                               )
+                       ),
+                       column(3, style = "padding-top: 25px;",
+                              actionButton(ns("buscar"), "🔍 Buscar", class = "btn btn-primary btn-lg w-100")
                        )
                      ),
+                     uiOutput(ns("overlap_warning")),
                      hr(),
                      uiOutput(ns("producto_info"))
                    )
@@ -40,19 +45,19 @@ contexto_producto_ui <- function(id) {
         fluidRow(
           column(width = 2, offset = 1,
                  div(class = "metric-card", 
-                     withSpinner(p(class = "metric-value", textOutput(ns("total_imports")))), 
+                     shinycssloaders::withSpinner(p(class = "metric-value", textOutput(ns("total_imports")))), 
                      p(class = "metric-label", "Importaciones (12m)"))),
           column(2, div(class = "metric-card", 
-                        withSpinner(p(class = "metric-value", textOutput(ns("num_proveedores")))), 
+                        shinycssloaders::withSpinner(p(class = "metric-value", textOutput(ns("num_proveedores")))), 
                         p(class = "metric-label", "Países Proveedores"))),
           column(2, div(class = "metric-card", 
-                        withSpinner(p(class = "metric-value", textOutput(ns("top_proveedor")))), 
+                        shinycssloaders::withSpinner(p(class = "metric-value", textOutput(ns("top_proveedor")))), 
                         p(class = "metric-label", "Principal Proveedor"))),
           column(2, div(class = "metric-card", 
-                        withSpinner(p(class = "metric-value", textOutput(ns("hhi_producto")))), 
+                        shinycssloaders::withSpinner(p(class = "metric-value", textOutput(ns("hhi_producto")))), 
                         p(class = "metric-label", "Índice HHI"))),
           column(2, div(class = "metric-card", 
-                        withSpinner(p(class = "metric-value", textOutput(ns("peso_total")))), 
+                        shinycssloaders::withSpinner(p(class = "metric-value", textOutput(ns("peso_total")))), 
                         p(class = "metric-label", "% sobre Total Importaciones")))
         ),
         
@@ -60,7 +65,11 @@ contexto_producto_ui <- function(id) {
           column(12,
                  card(
                    card_header(class = "bg-light", "📋 Detalle de Proveedores"),
-                   card_body(withSpinner(DTOutput(ns("tabla_proveedores"))))
+                   card_body(
+                     div(style = "margin-bottom: 10px;",
+                         downloadButton(ns("descargar_proveedores"), "📥 Descargar Excel", class = "btn btn-sm btn-outline-secondary")
+                     ),
+                     shinycssloaders::withSpinner(DTOutput(ns("tabla_proveedores"))))
                  )
           )
         ),
@@ -69,7 +78,7 @@ contexto_producto_ui <- function(id) {
           column(12,
                  card(
                    card_header(class = "bg-light", "📈 Evolución Histórica - Top 5 Proveedores (desde 2019)"),
-                   card_body(withSpinner(plotlyOutput(ns("evolucion_proveedores"), height = "500px")))
+                   card_body(shinycssloaders::withSpinner(plotlyOutput(ns("evolucion_proveedores"), height = "500px")))
                  )
           )
         )
@@ -88,113 +97,188 @@ contexto_producto_server <- function(id, conexion_db) {
     info_inicial <- reactive({
       req(conexion_db)
       
-      tryCatch({
-        message("1️⃣ Cargando metadatos iniciales...")
-        
-        query_codigos <- "
-          SELECT codigo 
-          FROM datacomex.taric_codigo_iso3a 
-          WHERE flujo = 'I' 
-          GROUP BY codigo 
-          ORDER BY codigo"
-        
-        query_fecha <- "SELECT MAX(fecha) as f FROM datacomex.taric_codigo_iso3a WHERE flujo = 'I'"
-        
-        res_codigos <- dbGetQuery(conexion_db, query_codigos)
-        res_fecha <- dbGetQuery(conexion_db, query_fecha)
-        
-        fecha_max <- as.Date(res_fecha$f[1])
-        fecha_inicio <- fecha_max %m-% months(11)
-        
-        list(
-          fecha_max = fecha_max,
-          desde = fecha_inicio,
-          hasta = fecha_max,
-          codigos = res_codigos$codigo,
-          label = paste0(format(fecha_inicio, "%b %Y"), " - ", format(fecha_max, "%b %Y"))
-        )
-      }, error = function(e) {
-        message("✗ Error en arranque: ", e$message)
-        return(NULL)
-      })
+      message("1️⃣ Cargando metadatos iniciales...")
+      
+      query_codigos <- "
+        SELECT codigo 
+        FROM datacomex.taric_codigo_iso3a 
+        WHERE flujo = 'I' 
+        GROUP BY codigo 
+        ORDER BY codigo"
+      
+      query_fecha <- "SELECT MAX(fecha) as f FROM datacomex.taric_codigo_iso3a WHERE flujo = 'I'"
+      
+      res_codigos <- dbGetQuery(conexion_db, query_codigos)
+      res_fecha <- dbGetQuery(conexion_db, query_fecha)
+      
+      # Generate HS2 and HS4 codes from the raw codes if they don't exist
+      raw_codes <- res_codigos$codigo
+      hs2 <- unique(substr(raw_codes, 1, 2))
+      hs4 <- unique(substr(raw_codes, 1, 4))
+      all_codes <- sort(unique(c(hs2, hs4, raw_codes)))
+      
+      fecha_max <- as.Date(res_fecha$f[1])
+      fecha_inicio <- fecha_max %m-% months(11)
+      
+      list(
+        fecha_max = fecha_max,
+        desde = fecha_inicio,
+        hasta = fecha_max,
+        codigos = all_codes,
+        label = paste0(format(fecha_inicio, "%b %Y"), " - ", format(fecha_max, "%b %Y"))
+      )
     })
     
     # --------------------------------------------------------------------------
-    # 2. ACTUALIZAR SELECTOR - SERVER-SIDE SELECTIZE
+    # 2. ACTUALIZAR SELECTOR - SERVER-SIDE SELECTIZE (all codes, any level)
     # --------------------------------------------------------------------------
     observe({
       req(info_inicial())
-      info <- info_inicial()
       
       updateSelectizeInput(
         session, 
         "producto",
-        choices = info$codigos,
+        choices = info_inicial()$codigos,
         server = TRUE,
         options = list(
           placeholder = 'Escriba para buscar código TARIC...',
-          maxOptions = 50
+          maxOptions = 100
         )
       )
-      message("✓ Selector vinculado al servidor")
+    })
+
+    # --------------------------------------------------------------------------
+    # 2b. OVERLAP VALIDATION — live check, prevent parent/child combos
+    # --------------------------------------------------------------------------
+    updating_selector <- reactiveVal(FALSE)
+
+    observeEvent(input$producto, {
+      if (isTRUE(updating_selector())) return()
+      
+      sel <- input$producto
+      if (is.null(sel) || length(sel) <= 1) {
+        output$overlap_warning <- renderUI(NULL)
+        return()
+      }
+      
+      # Check for overlaps: code A is prefix of code B → remove the child
+      to_remove <- character(0)
+      for (i in seq_along(sel)) {
+        for (j in seq_along(sel)) {
+          if (i != j && startsWith(sel[j], sel[i]) && nchar(sel[j]) > nchar(sel[i])) {
+            to_remove <- c(to_remove, sel[j])
+          }
+        }
+      }
+      to_remove <- unique(to_remove)
+      
+      if (length(to_remove) > 0) {
+        clean <- setdiff(sel, to_remove)
+        
+        output$overlap_warning <- renderUI({
+          div(class = "alert alert-warning", style = "margin-top: 8px; padding: 8px 12px;",
+              icon("triangle-exclamation"),
+              sprintf(" Códigos eliminados por solapamiento: %s (ya cubiertos por un código padre seleccionado).",
+                      paste(to_remove, collapse = ", ")))
+        })
+        
+        updating_selector(TRUE)
+        updateSelectizeInput(session, "producto",
+                             choices = info_inicial()$codigos,
+                             selected = clean,
+                             server = TRUE,
+                             options = list(
+                               placeholder = 'Escriba para buscar código TARIC...',
+                               maxOptions = 100
+                             ))
+        session$onFlushed(function() { updating_selector(FALSE) }, once = TRUE)
+      } else {
+        output$overlap_warning <- renderUI(NULL)
+      }
+    }, ignoreNULL = FALSE)
+    
+    # --------------------------------------------------------------------------
+    # 3. PRODUCTOS VALIDADOS — set on button click
+    # --------------------------------------------------------------------------
+    productos_validados <- reactiveVal(NULL)
+    
+    observeEvent(input$buscar, {
+      sel <- input$producto
+      if (is.null(sel) || length(sel) == 0) {
+        showNotification("Seleccione al menos un código TARIC.", type = "warning")
+        return()
+      }
+      productos_validados(sel)
     })
     
-    # 3. Nivel automático
     nivel_producto <- reactive({
-      req(input$producto)
-      nchar(input$producto)
+      req(productos_validados())
+      niveles <- unique(nchar(productos_validados()))
+      if (length(niveles) == 1) niveles[1] else max(niveles)
     })
     
     # --------------------------------------------------------------------------
-    # 4. CARGA DE DATOS - FILTRADO EN SQL
+    # 4. CARGA DE DATOS - FILTRADO EN SQL (triggers on productos_validados)
     # --------------------------------------------------------------------------
     datos_producto_raw <- reactive({
-      req(input$producto, info_inicial())
+      req(productos_validados(), info_inicial())
       info <- info_inicial()
+      codigos <- productos_validados()
       
-      id_notif <- showNotification("Descargando datos desde el servidor...", duration = NULL, type = "message")
+      id_notif <- showNotification("Descargando datos...", duration = NULL, type = "message")
       on.exit(removeNotification(id_notif))
       
-      tryCatch({
-        raw_df <- comerciotools::cargar_pg_datacomex(
-          dataset = "taric",
-          codigo = input$producto,
-          desde = as.Date("2019-01-01"),
-          hasta = info$hasta,
-          .conexion_db = conexion_db
-        )
-        return(raw_df %>% filter(flujo == "I"))
-        
-      }, error = function(e) {
-        showNotification(paste("Error:", e$message), type = "error")
-        return(NULL)
+      req(conexion_db)
+      
+      # Load data for each selected product and combine
+      dfs <- lapply(codigos, function(cod) {
+        tryCatch({
+          comerciotools::cargar_pg_datacomex(
+            dataset = "taric",
+            codigo = cod,
+            desde = as.Date("2019-01-01"),
+            hasta = info$hasta,
+            .conexion_db = conexion_db
+          )
+        }, error = function(e) NULL)
       })
+      
+      raw_df <- do.call(rbind, Filter(Negate(is.null), dfs))
+      if (is.null(raw_df) || nrow(raw_df) == 0) {
+        showNotification("No se encontraron datos de importación para estos productos.", type = "warning")
+        return(data.frame(iso3a = character(), euros = numeric(), fecha = as.Date(character()), stringsAsFactors = FALSE))
+      }
+      
+      # Deduplicate in case of overlapping sub-codes (belt and suspenders)
+      res <- raw_df %>% filter(flujo == "I") %>% distinct()
+      
+      if(nrow(res) == 0) {
+        showNotification("No se encontraron datos de importación para estos productos.", type = "warning")
+        return(data.frame(iso3a = character(), euros = numeric(), fecha = as.Date(character()), stringsAsFactors = FALSE))
+      }
+      return(res)
     })
     
     # --------------------------------------------------------------------------
     # NUEVO: TOTAL IMPORTACIONES (TODOS LOS PRODUCTOS)
     # --------------------------------------------------------------------------
     total_importaciones_general <- reactive({
-      req(info_inicial(), conexion_db)
+      req(info_inicial())
       info <- info_inicial()
       
-      tryCatch({
-        query_total <- sprintf("
-          SELECT SUM(euros) as total
-          FROM datacomex.taric_codigo_iso3a
-          WHERE flujo = 'I'
-            AND fecha >= '%s'
-            AND fecha <= '%s'",
-                               info$desde, info$hasta
-        )
-        
-        res <- dbGetQuery(conexion_db, query_total)
-        return(res$total[1])
-        
-      }, error = function(e) {
-        message("Error calculando total importaciones: ", e$message)
-        return(NA)
-      })
+      req(conexion_db)
+      
+      query_total <- sprintf("
+        SELECT SUM(euros) as total
+        FROM datacomex.taric_codigo_iso3a
+        WHERE flujo = 'I'
+        AND fecha >= '%s'
+        AND fecha <= '%s'",
+                             info$desde, info$hasta
+      )
+      
+      res <- dbGetQuery(conexion_db, query_total)
+      return(res$total[1])
     })
     
     # --------------------------------------------------------------------------
@@ -264,9 +348,10 @@ contexto_producto_server <- function(id, conexion_db) {
     # --------------------------------------------------------------------------
     
     output$producto_info <- renderUI({
-      req(input$producto, info_inicial())
+      req(productos_validados(), info_inicial())
+      codigos_str <- paste(productos_validados(), collapse = ", ")
       div(class = "info-box",
-          p(icon("box"), strong(" Código: "), input$producto, " | ",
+          p(icon("box"), strong(" Códigos: "), codigos_str, " | ",
             icon("calendar"), strong(" Periodo: "), info_inicial()$label))
     })
     
@@ -321,6 +406,22 @@ contexto_producto_server <- function(id, conexion_db) {
         formatRound(4, 1)
     })
     
+    output$descargar_proveedores <- downloadHandler(
+      filename = function() {
+        codigos_str <- paste(productos_validados(), collapse = "_")
+        paste0("proveedores_", codigos_str, "_", Sys.Date(), ".xlsx")
+      },
+      content = function(file) {
+        req(datos_consolidados())
+        df <- datos_consolidados() %>%
+          select(País = iso3a,
+                 `Valor Último Mes` = valor_ultimo_mes,
+                 `Valor 12m` = valor_12m,
+                 `Cuota % (12m)` = cuota)
+        writexl::write_xlsx(df, file)
+      }
+    )
+    
     output$evolucion_proveedores <- renderPlotly({
       req(datos_historicos())
       plot_ly(datos_historicos(), x = ~fecha, y = ~valor, color = ~iso3a, 
@@ -330,7 +431,7 @@ contexto_producto_server <- function(id, conexion_db) {
     
     # Retorno de reactivos para otros módulos
     return(list(
-      producto = reactive(input$producto),
+      producto = reactive(productos_validados()),
       nivel = nivel_producto,
       datos = datos_consolidados,
       periodo = reactive(info_inicial()),
