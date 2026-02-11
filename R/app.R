@@ -411,14 +411,6 @@ vulnerabilidad_comercial_app <- function(...) {
       title = "Enfoque: País",
       icon = shiny::icon("globe"),
       enfoque_pais_ui("enfoque_pais")
-    ),
-
-    bslib::nav_spacer(),
-
-    bslib::nav_panel(
-      title = "Ayuda",
-      icon = shiny::icon("circle-question"),
-      ayuda_ui("ayuda")
     )
   )
   
